@@ -39,6 +39,18 @@
 extern "C" int pc_settings_get_recolor_mod(void);
 extern "C" int pc_settings_get_recolor_palette(void);
 
+// Live-editable "Custom" palette (the last entry in the palette cycle).
+// Edited in-game, F1 / Mods, one R/G/B channel per row, Left/Right to adjust.
+extern "C" int pc_settings_get_recolor_custom_blue_r(void);
+extern "C" int pc_settings_get_recolor_custom_blue_g(void);
+extern "C" int pc_settings_get_recolor_custom_blue_b(void);
+extern "C" int pc_settings_get_recolor_custom_red_r(void);
+extern "C" int pc_settings_get_recolor_custom_red_g(void);
+extern "C" int pc_settings_get_recolor_custom_red_b(void);
+extern "C" int pc_settings_get_recolor_custom_yellow_r(void);
+extern "C" int pc_settings_get_recolor_custom_yellow_g(void);
+extern "C" int pc_settings_get_recolor_custom_yellow_b(void);
+
 namespace pc_recolor {
 
 static const int kPaletteCount = 4;
@@ -83,13 +95,34 @@ inline bool enabled()
 	return pc_settings_get_recolor_mod() != 0;
 }
 
+// One slot past the last preset palette selects the live "Custom" colours.
+static const int kCustomPaletteIndex = kPaletteCount;
+
 inline int paletteIndex()
 {
 	int idx = pc_settings_get_recolor_palette();
-	if (idx < 0 || idx >= kPaletteCount) {
+	if (idx < 0 || idx > kCustomPaletteIndex) {
 		return 0;
 	}
 	return idx;
+}
+
+// channel: 0 = R, 1 = G, 2 = B. slot: 0 Blue, 1 Red, 2 Yellow.
+inline float customChannel(int slot, int channel)
+{
+	if (slot == 0) {
+		if (channel == 0) return (float)pc_settings_get_recolor_custom_blue_r();
+		if (channel == 1) return (float)pc_settings_get_recolor_custom_blue_g();
+		return (float)pc_settings_get_recolor_custom_blue_b();
+	}
+	if (slot == 1) {
+		if (channel == 0) return (float)pc_settings_get_recolor_custom_red_r();
+		if (channel == 1) return (float)pc_settings_get_recolor_custom_red_g();
+		return (float)pc_settings_get_recolor_custom_red_b();
+	}
+	if (channel == 0) return (float)pc_settings_get_recolor_custom_yellow_r();
+	if (channel == 1) return (float)pc_settings_get_recolor_custom_yellow_g();
+	return (float)pc_settings_get_recolor_custom_yellow_b();
 }
 
 inline u8 toU8(float v)
@@ -104,7 +137,11 @@ inline s16 toS16(float v)
 
 inline Colour tintColour(int slot, u8 alpha = 255)
 {
-	const float(*p)[3] = kPalettes[paletteIndex()];
+	int idx = paletteIndex();
+	if (idx == kCustomPaletteIndex) {
+		return Colour(toU8(customChannel(slot, 0)), toU8(customChannel(slot, 1)), toU8(customChannel(slot, 2)), alpha);
+	}
+	const float(*p)[3] = kPalettes[idx];
 	return Colour(toU8(p[slot][0]), toU8(p[slot][1]), toU8(p[slot][2]), alpha);
 }
 
@@ -140,10 +177,21 @@ static inline void recolour(int slot, float& r, float& g, float& b)
 		return;
 	}
 
-	const float(*p)[3] = kPalettes[paletteIndex()];
-	r = mx * (1.0f - s * (1.0f - p[slot][0] / 255.0f));
-	g = mx * (1.0f - s * (1.0f - p[slot][1] / 255.0f));
-	b = mx * (1.0f - s * (1.0f - p[slot][2] / 255.0f));
+	int idx = paletteIndex();
+	float pr, pg, pb;
+	if (idx == kCustomPaletteIndex) {
+		pr = customChannel(slot, 0);
+		pg = customChannel(slot, 1);
+		pb = customChannel(slot, 2);
+	} else {
+		const float(*p)[3] = kPalettes[idx];
+		pr = p[slot][0];
+		pg = p[slot][1];
+		pb = p[slot][2];
+	}
+	r = mx * (1.0f - s * (1.0f - pr / 255.0f));
+	g = mx * (1.0f - s * (1.0f - pg / 255.0f));
+	b = mx * (1.0f - s * (1.0f - pb / 255.0f));
 }
 
 // --- 1) Onions & Pellets: colour-animation materials -----------------------
