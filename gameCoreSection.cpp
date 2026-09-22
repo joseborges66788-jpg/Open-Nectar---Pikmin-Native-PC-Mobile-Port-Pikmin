@@ -2188,10 +2188,9 @@ void GameCoreSection::draw1D(Graphics& gfx)
 	}
 
 #if defined(PIKI_PC_PORT)
-	// Debug HUD: Olimar/Louie's coordinates (Mods > Show Coordinates in the
-	// settings menu). getNavi() with no argument is whichever captain is
-	// currently under control.
-	if (pc_settings_get_show_coords()) {
+	// Debug HUD: Olimar/Louie's coordinates, always on. getNavi() with no
+	// argument is whichever captain is currently under control.
+	{
 		Navi* navi = naviMgr ? naviMgr->getNavi() : nullptr;
 		if (navi) {
 			Vector3f& pos = navi->getPosition();
