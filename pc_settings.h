@@ -52,10 +52,6 @@ int pc_settings_get_fps_mode(void);
 // stock port stays faithful.
 int pc_settings_get_chain_actions(void);
 
-// Returns 1 while the coordinate debug HUD (Mods > Show Coordinates) is
-// enabled, 0 otherwise. Off by default.
-int pc_settings_get_show_coords(void);
-
 // Returns 1 while hold-to-continue-plucking is enabled, 0 otherwise.
 //
 // Retail wants a tap for each sprout. With the mod on, holding Extract after
@@ -92,6 +88,13 @@ bool pc_newgame_prompt_chose_hard(void);
 
 /// Debug shortcuts F5 and F6, off by default.
 int pc_settings_get_debug_keys(void);
+
+/// Returns 1 while the "Show Coordinates" debug mod is enabled, 0 otherwise.
+///
+/// When on, Olimar/Louie's live world-space position is drawn centred near
+/// the top of the screen every frame, and also shown as the value of the
+/// "Show Coordinates" row in the Mods submenu itself. Off by default.
+int pc_settings_get_show_coords(void);
 
 /**
  * @brief The language the PAL disc should be played in, as an OS_LANG_* value.

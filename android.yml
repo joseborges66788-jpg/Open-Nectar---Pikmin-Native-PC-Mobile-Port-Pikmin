@@ -1,0 +1,52 @@
+name: Android APK (debug)
+
+# Dispara manualmente pela aba "Actions" do GitHub (botão "Run workflow").
+# Gera um APK debug (assinado com a chave debug padrão, serve pra instalar
+# via adb ou direto no aparelho) e sobe como artifact do run.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Versões exatas que android/app/build.gradle pede (ndkVersion e o
+      # "version" do bloco externalNativeBuild.cmake). Se o build.gradle for
+      # atualizado no futuro, essas linhas precisam acompanhar.
+      - name: Install NDK, CMake and platform
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;28.2.13676358" "cmake;3.22.1" "platforms;android-35"
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+        env:
+          # android/app/build.gradle não lê local.properties no CI; o AGP
+          # acha o SDK sozinho por essas duas variáveis, que o setup-android
+          # já deixa exportadas -- mantidas aqui só por clareza/robustez.
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-nectar-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

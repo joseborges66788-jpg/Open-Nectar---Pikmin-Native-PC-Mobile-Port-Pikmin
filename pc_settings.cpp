@@ -51,6 +51,9 @@
 #include "Geometry.h"
 #include "system.h"
 #include "types.h"
+#include "NaviMgr.h"
+#include "Navi.h"
+#include "Vector.h"
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -108,10 +111,6 @@ struct PcConfig {
     int pikiLimit = 100;
     // Minutes of play per in-game day, as shown in the menu. 10 is the original.
     int dayMinutes = 10;
-    // Debug HUD: shows Olimar/Louie's X, Y, Z coordinates on screen. Off by
-    // default, same as every other Mods row -- the original experience is
-    // untouched unless asked for.
-    int showCoords = 0;
     // Colour grading. Neutral by default: the port should look like the game
     // until someone asks otherwise.
     int antialiasing = 0;   // 0 off, 1 FXAA
@@ -128,6 +127,9 @@ struct PcConfig {
     // variable: the launcher starts the game as a child process, so an
     // exported variable does not reliably reach it.
     int debugKeys = 0;
+    // Show Olimar/Louie's live coordinates on screen (0=off, 1=on). Off by
+    // default: this is a debug aid, not part of the faithful experience.
+    int showCoords = 0;
     // Texture pack (PLAN_TEXTURAS_HD fase 2): nombre de carpeta bajo
     // Load/Textures/ que se indexa al arrancar. Se aplica reiniciando: el
     // índice del pack se construye una sola vez, en pc_texpack_init.
@@ -153,7 +155,6 @@ struct PcConfig {
         mouseWheelAction = 0;
         pikiLimit = 100;
         dayMinutes = 10;
-        showCoords = 0;
         antialiasing  = 0;
         fog           = 1;
         bloom         = 0;
@@ -165,6 +166,7 @@ struct PcConfig {
         brightness    = 0.0f;
         saturation    = 1.0f;
         debugKeys = 0;
+        showCoords = 0;
         texturePack.clear();
         texturePackEnabled = 0;
         for (int i = 0; i < PC_KEY_ACT_COUNT; i++) {
@@ -758,7 +760,6 @@ void saveConfig() {
     out << "renderScale = " << sConfig.renderScale << "\n";
     out << "fpsMode = " << sConfig.fpsMode << "\n";
     out << "chainActions = " << sConfig.chainActions << "\n";
-    out << "showCoords = " << sConfig.showCoords << "\n";
     out << "holdToPluck = " << sConfig.holdToPluck << "\n";
     out << "mouseWheelAction = " << sConfig.mouseWheelAction << "\n";
     out << "pikiLimit = " << sConfig.pikiLimit << "\n";
@@ -774,6 +775,7 @@ void saveConfig() {
     out << "brightness = " << sConfig.brightness << "\n";
     out << "saturation = " << sConfig.saturation << "\n";
     out << "debugKeys = " << sConfig.debugKeys << "\n";
+    out << "showCoords = " << sConfig.showCoords << "\n";
     out << "texturePack = " << sConfig.texturePack << "\n";
     out << "texturePackEnabled = " << sConfig.texturePackEnabled << "\n";
     out << "controlMode = " << sConfig.controlMode << "\n";
@@ -860,9 +862,6 @@ void loadConfig() {
         else if (key == "chainActions") {
             sConfig.chainActions = atoi(val.c_str()) ? 1 : 0;
         }
-        else if (key == "showCoords") {
-            sConfig.showCoords = atoi(val.c_str()) ? 1 : 0;
-        }
         else if (key == "holdToPluck") {
             sConfig.holdToPluck = atoi(val.c_str()) ? 1 : 0;
         }
@@ -917,6 +916,9 @@ void loadConfig() {
         }
         else if (key == "debugKeys") {
             sConfig.debugKeys = atoi(val.c_str()) ? 1 : 0;
+        }
+        else if (key == "showCoords") {
+            sConfig.showCoords = atoi(val.c_str()) ? 1 : 0;
         }
         else if (key == "texturePack") {
             const bool safe = !val.empty() && val.size() < 64
@@ -1795,7 +1797,8 @@ void pollMenuInput() {
             else if (right) idx = (idx + 1) % kDayMinutesCount;
             sPending.dayMinutes = kDayMinutes[idx];
         }
-        // Debug HUD: Olimar/Louie's coordinates, top-left of the screen.
+        // Show Olimar/Louie's live coordinates (centre of screen and, while
+        // this row is selected, right here as the row's value too).
         else if (sModsSelection == 6) {
             if (left || right) sPending.showCoords = sPending.showCoords ? 0 : 1;
         }
@@ -2302,6 +2305,25 @@ void drawTimedNotice(int centerX, int y) {
                     colour, Colour(10, 16, 36, 255), msg);
 }
 
+// Always-on debug overlay for the "Show Coordinates" mod (Mods submenu):
+// Olimar/Louie's live world-space position, drawn centred near the top of
+// the screen every frame the mod is on -- independent of whether the F1
+// menu itself is open -- so it stays clear of the game's own HUD along the
+// bottom and sides.
+void drawCoordsHud(int screenW) {
+    if (!naviMgr) return;
+    Navi* navi = naviMgr->getNavi();
+    if (!navi) return; // no game loaded yet (title screen, file select, ...)
+
+    const Vector3f& pos = navi->getPosition();
+    char line[96];
+    snprintf(line, sizeof(line), "X: %.1f   Y: %.1f   Z: %.1f", pos.x, pos.y, pos.z);
+
+    const int y = 24;
+    drawTextOutline(screenW / 2 - menuTextWidth(line) / 2, y, "%s",
+                    Colour(255, 229, 120, 255), Colour(0, 0, 0, 255), line);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -2645,10 +2667,23 @@ void pc_newgame_prompt_draw(void) {
 }
 
 void pc_settings_draw(void) {
-    if (!sMenuOpen) return;
     if (!gsys || !gsys->mDGXGfx) return;
     DGXGraphics* gfx = static_cast<DGXGraphics*>(gsys->mDGXGfx);
     ensureFont();
+
+    const int screenW = gfx->mScreenWidth;
+    const int screenH = gfx->mScreenHeight;
+
+    // Coordinate HUD (Mods > Show Coordinates). Drawn every frame the game is
+    // running -- independent of whether the F1 menu itself is open -- so it
+    // behaves as an always-on debug overlay rather than a menu-only readout.
+    if (sFont && pc_settings_get_show_coords()) {
+        Matrix4f coordOrtho;
+        gfx->setOrthogonal(coordOrtho.mMtx, RectArea(0, 0, screenW, screenH));
+        drawCoordsHud(screenW);
+    }
+
+    if (!sMenuOpen) return;
     if (!sFont) return;
 
     // Dim ignores GX 640 mapping (title/file-select leave a left-aligned
@@ -2666,8 +2701,6 @@ void pc_settings_draw(void) {
         ~F1Map() { pc_gfx_set_ui_43_no_bars(0); }
     } f1Map;
 
-    const int screenW = gfx->mScreenWidth;
-    const int screenH = gfx->mScreenHeight;
     PcSettingsP2DFrame nativeFrame(screenW, screenH);
 
     pc_gfx_dim_full_target(160);
@@ -3297,12 +3330,22 @@ void pc_settings_draw(void) {
             } else if (i == 3) {
                 snprintf(value, sizeof(value), "%s",
                          sPending.mouseWheelAction ? "Camera Zoom" : "Pikmin Colour");
+            } else if (i == 6) {
+                // The value column doubles as the live readout: once this mod
+                // is on, the same coordinates drawn at the top of the screen
+                // show up right here too.
+                if (!sPending.showCoords) {
+                    snprintf(value, sizeof(value), "Off (original)");
+                } else if (naviMgr && naviMgr->getNavi()) {
+                    const Vector3f& pos = naviMgr->getNavi()->getPosition();
+                    snprintf(value, sizeof(value), "On  X:%.1f Y:%.1f Z:%.1f",
+                             pos.x, pos.y, pos.z);
+                } else {
+                    snprintf(value, sizeof(value), "On  (no Navi loaded)");
+                }
             } else if (i == 7) {
                 snprintf(value, sizeof(value), "%s",
                          sPending.debugKeys ? "On" : "Off");
-            } else if (i == 6) {
-                snprintf(value, sizeof(value), "%s",
-                         sPending.showCoords ? "On" : "Off");
             } else if (i == 5) {
                 if (pc_hardmode_active()) {
                     snprintf(value, sizeof(value), "%d min (Hard)", PC_HARDMODE_DAY_MINUTES);
@@ -3385,10 +3428,6 @@ int pc_settings_get_chain_actions(void) {
     return sConfig.chainActions;
 }
 
-int pc_settings_get_show_coords(void) {
-    return sConfig.showCoords;
-}
-
 int pc_settings_get_hold_to_pluck(void) {
     return sConfig.holdToPluck;
 }
@@ -3411,4 +3450,8 @@ int pc_settings_get_day_minutes(void) {
 
 int pc_settings_get_debug_keys(void) {
     return sConfig.debugKeys;
+}
+
+int pc_settings_get_show_coords(void) {
+    return sConfig.showCoords;
 }
