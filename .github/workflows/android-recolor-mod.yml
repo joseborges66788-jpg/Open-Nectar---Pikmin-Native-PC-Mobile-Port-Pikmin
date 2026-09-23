@@ -1,0 +1,479 @@
+name: Open Nectar Recolor + Onion Mod (APK)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Baixar o codigo do Open Nectar
+        uses: actions/checkout@v4
+        with:
+          repository: SSunnKing/Open-Nectar---Pikmin-Native-PC-Mobile-Port
+          ref: main
+          path: nectar
+
+      - name: Instalar o Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Aplicar o mod (recolorir + Onions Roxa/Branca)
+        working-directory: nectar
+        run: |
+          mkdir -p pc_port/mods
+          cat > pc_port/mods/pc_recolor.h <<'EOF_HEADER'
+          // pc_recolor.h -- Recolour mod (Onions, Pellets, Piki, lights, container UI)
+          // + White (3) / Purple (4) onion mod: fixed identity colours, always on.
+          #pragma once
+
+          #include "Colour.h"
+          #include "GlobalGameOptions.h"
+          #include "Material.h"
+          #include "P2D/Picture.h"
+          #include "P2D/Window.h"
+          #include "Shape.h"
+          #include "zen/particle.h"
+
+          #include <math.h>
+
+          extern "C" int pc_settings_get_recolor_mod(void);
+          extern "C" int pc_settings_get_recolor_palette(void);
+
+          namespace pc_recolor {
+
+          static const int kPaletteCount = 4;
+
+          static const float kPalettes[kPaletteCount][3][3] = {
+          	{ { 255.0f, 255.0f, 255.0f }, { 150.0f, 40.0f, 220.0f }, { 255.0f, 100.0f, 180.0f } },
+          	{ { 0.0f, 220.0f, 255.0f }, { 255.0f, 140.0f, 0.0f }, { 40.0f, 220.0f, 80.0f } },
+          	{ { 235.0f, 235.0f, 235.0f }, { 20.0f, 20.0f, 20.0f }, { 140.0f, 140.0f, 140.0f } },
+          	{ { 190.0f, 230.0f, 255.0f }, { 255.0f, 190.0f, 205.0f }, { 255.0f, 245.0f, 180.0f } },
+          };
+
+          static const float kSrcHue[3]    = { 220.0f, 0.0f, 55.0f };
+          static const float kHueTolerance = 60.0f;
+
+          // White (3) / Purple (4): fixed identity, always on, not affected by the
+          // toggle or palette above. 3 borrows Blue's hue/shape internally, 4 Red's.
+          static const float kExtraColour[2][3] = {
+          	{ 250.0f, 250.0f, 245.0f },
+          	{ 140.0f, 40.0f, 200.0f },
+          };
+          static const float kExtraSrcHue[2] = { 220.0f, 0.0f };
+
+          inline bool isExtraSlot(int slot) { return slot == 3 || slot == 4; }
+          inline bool enabled() { return pc_settings_get_recolor_mod() != 0; }
+
+          inline int paletteIndex()
+          {
+          	int idx = pc_settings_get_recolor_palette();
+          	if (idx < 0 || idx >= kPaletteCount) return 0;
+          	return idx;
+          }
+
+          inline u8 toU8(float v) { return (u8)(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v + 0.5f)); }
+          inline s16 toS16(float v) { return (s16)(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v + 0.5f)); }
+
+          inline Colour tintColour(int slot, u8 alpha = 255)
+          {
+          	if (isExtraSlot(slot)) {
+          		const float* c = kExtraColour[slot - 3];
+          		return Colour(toU8(c[0]), toU8(c[1]), toU8(c[2]), alpha);
+          	}
+          	const float(*p)[3] = kPalettes[paletteIndex()];
+          	return Colour(toU8(p[slot][0]), toU8(p[slot][1]), toU8(p[slot][2]), alpha);
+          }
+
+          static inline void recolour(int slot, float& r, float& g, float& b)
+          {
+          	float mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+          	float mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+          	float d  = mx - mn;
+          	if (mx <= 0.0f || d < 0.001f) return;
+
+          	float s = d / mx;
+          	float h;
+          	if (mx == r) h = 60.0f * fmodf((g - b) / d, 6.0f);
+          	else if (mx == g) h = 60.0f * ((b - r) / d + 2.0f);
+          	else h = 60.0f * ((r - g) / d + 4.0f);
+          	if (h < 0.0f) h += 360.0f;
+
+          	float srcHue = isExtraSlot(slot) ? kExtraSrcHue[slot - 3] : kSrcHue[slot];
+          	float diff   = fabsf(h - srcHue);
+          	if (diff > 180.0f) diff = 360.0f - diff;
+          	if (diff > kHueTolerance) return;
+
+          	const float* tgt = isExtraSlot(slot) ? kExtraColour[slot - 3] : kPalettes[paletteIndex()][slot];
+          	r = mx * (1.0f - s * (1.0f - tgt[0] / 255.0f));
+          	g = mx * (1.0f - s * (1.0f - tgt[1] / 255.0f));
+          	b = mx * (1.0f - s * (1.0f - tgt[2] / 255.0f));
+          }
+
+          static inline void applyMaterial(ShapeDynMaterials& dyn, int slot)
+          {
+          	if (slot < 0 || slot > 4 || (!enabled() && !isExtraSlot(slot))) return;
+
+          	for (int i = 0; i < dyn.mMatCount; i++) {
+          		Material& mat = dyn.mMaterials[i];
+          		if (!(mat.mFlags & MATFLAG_PVW)) continue;
+
+          		if (mat.mColourInfo.mTotalFrameCount != 0) {
+          			Colour& c = mat.colour();
+          			float r = c.r, g = c.g, b = c.b;
+          			recolour(slot, r, g, b);
+          			c.r = toU8(r); c.g = toU8(g); c.b = toU8(b);
+          		}
+          		for (int t = 0; t < 3; t++) {
+          			PVWTevColReg& reg = mat.mTevInfo->mTevColRegs[t];
+          			if (reg.mAnimFrameCount) {
+          				ShortColour& c = reg.mAnimatedColor;
+          				float r = c.r, g = c.g, b = c.b;
+          				recolour(slot, r, g, b);
+          				c.r = toS16(r); c.g = toS16(g); c.b = toS16(b);
+          			}
+          		}
+          	}
+          }
+
+          static inline void tintEffect(zen::particleGenerator* efx, int slot)
+          {
+          	if (!efx) return;
+          	if (slot < 0 || slot > 4 || (!enabled() && !isExtraSlot(slot))) { efx->clearTint(); return; }
+          	efx->setTint(tintColour(slot));
+          }
+
+          static inline Colour pikiColour(int slot, const Colour& original)
+          {
+          	if (slot < 0 || slot > 4 || (!enabled() && !isExtraSlot(slot))) return original;
+          	return tintColour(slot, original.a);
+          }
+
+          template <typename ColourTableT>
+          static inline void refreshTable(ColourTableT& table, const Colour original[3])
+          {
+          	for (int slot = 0; slot < 3; slot++) table[slot] = pikiColour(slot, original[slot]);
+          }
+
+          static inline void tintPane(P2DPicture* pic, int slot)
+          {
+          	if (!pic) return;
+          	if (!enabled() || slot < 0 || slot > 2) { pic->setWhite(Colour(255, 255, 255, 255)); return; }
+          	pic->setWhite(tintColour(slot));
+          }
+
+          static inline void tintWindow(P2DWindow* win, int slot)
+          {
+          	if (!win) return;
+          	if (!enabled() || slot < 0 || slot > 2) { win->setFlatColour(Colour(255, 255, 255, 255)); return; }
+          	win->setFlatColour(tintColour(slot));
+          }
+
+          } // namespace pc_recolor
+          EOF_HEADER
+          cat > pc_port/mods/pc_onion_maker.h <<'EOF_ONIONMAKER'
+          // pc_onion_maker.h -- Purple & White Onions (Pikmin reuse Red/Blue's base)
+          //
+          // Adds two extra onion "slots": 3 = White (reuses Blue's shape + animation
+          // state internally, recoloured on top), 4 = Purple (reuses Red's). These are
+          // NOT affected by the Recolour Mod on/off toggle or palette choice -- White
+          // and Purple are their own fixed identity, not a re-tint of the original 3.
+          //
+          // Spawn locations (no hardcoded coordinates, found live each stage):
+          //   - White onion:  Forest Navel, offset from the first live Puffstool (Kinoko).
+          //   - Purple onion: Impact Site, offset from the Red onion, higher up.
+          // EDIT kWhiteOffset / kPurpleOffset below to move them.
+          //
+          // NOT verified in a running game -- this spawns a real new actor at runtime,
+          // which this project's other patches never needed to do. Check in-game.
+          #pragma once
+
+          #include "GlobalGameOptions.h"
+          #include "GoalItem.h"
+          #include "ItemMgr.h"
+          #include "gameflow.h"
+          #include "teki.h"
+          #include "zen/Math.h"
+
+          extern ItemMgr* itemMgr;
+          extern TekiMgr* tekiMgr;
+
+          namespace pc_onion_maker {
+
+          static const int kWhite  = 3;
+          static const int kPurple = 4;
+
+          // Offsets from the reference object, in map units (same units as mSRT.t).
+          static const Vector3f kPurpleOffset(250.0f, 150.0f, 250.0f); // up + away from Red onion
+          static const Vector3f kWhiteOffset(220.0f, 0.0f, 220.0f);    // beside the Puffstool
+
+          inline Creature* findTekiByType(int type)
+          {
+          	if (!tekiMgr) {
+          		return nullptr;
+          	}
+          	Iterator iter(tekiMgr);
+          	CI_LOOP(iter)
+          	{
+          		Creature* c = *iter;
+          		if (c && c->isAlive() && static_cast<Teki*>(c)->mTekiType == type) {
+          			return c;
+          		}
+          	}
+          	return nullptr;
+          }
+
+          inline bool spawnOnion(int color, const Vector3f& pos, Generator* generatorToCopy)
+          {
+          	if (!itemMgr) {
+          		return false;
+          	}
+          	Creature* item = itemMgr->birth(OBJTYPE_Goal);
+          	if (!item) {
+          		return false;
+          	}
+          	GoalItem* onion = static_cast<GoalItem*>(item);
+          	onion->setColorType(color);
+          	onion->init(pos);
+          	onion->mSRT.r.set(0.0f, 0.0f, 0.0f);
+          	onion->mFaceDirection = 0.0f;
+          	onion->mGenerator     = generatorToCopy;
+          	onion->mHealth = onion->mMaxHealth = 1.0f;
+          	onion->startAI(0);
+          	return true;
+          }
+
+          // Called every frame; no-ops once this stage's onions are placed (or once
+          // it has determined this stage doesn't need any).
+          inline void update()
+          {
+          	static int sLastStage = -2; // never a valid stage ID at boot
+
+          	int stage = flowCont.mCurrentStage ? flowCont.mCurrentStage->mStageID : -1;
+          	if (stage == sLastStage) {
+          		return;
+          	}
+
+          	if (stage == STAGE_Practice) { // Impact Site: Purple, offset from the Red onion
+          		GoalItem* red = itemMgr ? itemMgr->getContainer(Red) : nullptr;
+          		if (!red) {
+          			return; // onions not placed yet this frame; try again next frame
+          		}
+          		spawnOnion(kPurple, red->mSRT.t + kPurpleOffset, red->mGenerator);
+          		sLastStage = stage;
+          	} else if (stage == STAGE_Cave) { // Forest Navel: White, offset from the Puffstool
+          		Creature* puff = findTekiByType(TEKI_Kinoko);
+          		if (!puff) {
+          			return;
+          		}
+          		spawnOnion(kWhite, puff->mSRT.t + kWhiteOffset, puff->mGenerator);
+          		sLastStage = stage;
+          	} else {
+          		sLastStage = stage; // nothing to spawn on this stage
+          	}
+          }
+
+          } // namespace pc_onion_maker
+          EOF_ONIONMAKER
+
+          python3 - <<'PY'
+          def edit(path, pairs):
+              s = open(path, encoding="utf-8", newline="").read()
+              nl = "\r\n" if "\r\n" in s else "\n"
+              for old, new in pairs:
+                  old = old.replace("\n", nl)
+                  new = new.replace("\n", nl)
+                  assert s.count(old) == 1, (path, old)
+                  s = s.replace(old, new)
+              open(path, "w", encoding="utf-8", newline="").write(s)
+
+          # P2D/Window.h
+          edit("include/P2D/Window.h", [
+              ("\tvoid setTexture(Texture* tex)\n"
+               "\t{\n"
+               "\t\tmTLCornerTexture->setTexture(tex);\n"
+               "\t\tmTRCornerTexture->setTexture(tex);\n"
+               "\t\tmBLCornerTexture->setTexture(tex);\n"
+               "\t\tmBRCornerTexture->setTexture(tex);\n"
+               "\t}\n"
+               "\n"
+               "\tP2DWindow(P2DPane*, RandomAccessStream*, u16);\n",
+
+               "\tvoid setTexture(Texture* tex)\n"
+               "\t{\n"
+               "\t\tmTLCornerTexture->setTexture(tex);\n"
+               "\t\tmTRCornerTexture->setTexture(tex);\n"
+               "\t\tmBLCornerTexture->setTexture(tex);\n"
+               "\t\tmBRCornerTexture->setTexture(tex);\n"
+               "\t}\n"
+               "\n"
+               "\t// PC/Android: flat multiply-tint for all four corners (recolour mod).\n"
+               "\tvoid setFlatColour(Colour c)\n"
+               "\t{\n"
+               "\t\tmTLCornerColour = mTRCornerColour = mBLCornerColour = mBRCornerColour = c;\n"
+               "\t}\n"
+               "\n"
+               "\tP2DWindow(P2DPane*, RandomAccessStream*, u16);\n"),
+          ])
+
+          # goalItem.cpp
+          edit("src/plugPikiKando/goalItem.cpp", [
+              ('#include "Piki.h"\n',
+               '#include "Piki.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ("\t\tif (!mSpotEfx) {\n"
+               "\t\t\tmSpotEfx = effectMgr->create(efxIDs[mOnionColour], mSRT.t, nullptr, nullptr);\n"
+               "\t\t\tif (mSpotEfx) {\n"
+               "\t\t\t\tmSpotEfx->setEmitPosPtr(&mSRT.t);\n"
+               "\t\t\t}\n"
+               "\t\t\tSeSystem::playSysSe(SYSSE_CONTAINER_OK);\n"
+               "\t\t}\n",
+
+               "\t\tif (!mSpotEfx) {\n"
+               "\t\t\tmSpotEfx = effectMgr->create(efxIDs[mOnionColour], mSRT.t, nullptr, nullptr);\n"
+               "\t\t\tif (mSpotEfx) {\n"
+               "\t\t\t\tmSpotEfx->setEmitPosPtr(&mSRT.t);\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t\t\t\tpc_recolor::tintEffect(mSpotEfx, mOnionColour);\n"
+               "#endif\n"
+               "\t\t\t}\n"
+               "\t\t\tSeSystem::playSysSe(SYSSE_CONTAINER_OK);\n"
+               "\t\t}\n"),
+
+              ("\t\tif (!mHaloEfx) {\n"
+               "\t\t\tmHaloEfx = effectMgr->create(efxIDs[mOnionColour], mSRT.t, nullptr, nullptr);\n"
+               "\t\t\tif (mHaloEfx) {\n"
+               "\t\t\t\tmHaloEfx->setEmitPosPtr(&mSRT.t);\n"
+               "\t\t\t}\n"
+               "\t\t}\n",
+
+               "\t\tif (!mHaloEfx) {\n"
+               "\t\t\tmHaloEfx = effectMgr->create(efxIDs[mOnionColour], mSRT.t, nullptr, nullptr);\n"
+               "\t\t\tif (mHaloEfx) {\n"
+               "\t\t\t\tmHaloEfx->setEmitPosPtr(&mSRT.t);\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t\t\t\tpc_recolor::tintEffect(mHaloEfx, mOnionColour);\n"
+               "#endif\n"
+               "\t\t\t}\n"
+               "\t\t}\n"),
+          ])
+
+          # uteffect.cpp
+          edit("src/plugPikiKando/uteffect.cpp", [
+              ('#include "Matrix3f.h"\n#include "zen/Math.h"\n',
+               '#include "Matrix3f.h"\n#include "zen/Math.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ("void FreeLightEffect::emit(immut EffectParm& parm)\n"
+               "{\n"
+               "\tif (!mEfx) {\n"
+               "\t\tmEfx = effectMgr->create((EffectMgr::effTypeTable)(EffectMgr::EFF_Piki_IdleBlue - mColor), *parm.mPositionRef, nullptr, nullptr);\n"
+               "\t\tif (mEfx) {\n"
+               "\t\t\tmScale = mEfx->getScaleSize();\n"
+               "\t\t\tmEfx->setEmitPosPtr(parm.mPositionRef);\n"
+               "\t\t}\n"
+               "\t}\n",
+
+               "void FreeLightEffect::emit(immut EffectParm& parm)\n"
+               "{\n"
+               "\tif (!mEfx) {\n"
+               "\t\tmEfx = effectMgr->create((EffectMgr::effTypeTable)(EffectMgr::EFF_Piki_IdleBlue - mColor), *parm.mPositionRef, nullptr, nullptr);\n"
+               "\t\tif (mEfx) {\n"
+               "\t\t\tmScale = mEfx->getScaleSize();\n"
+               "\t\t\tmEfx->setEmitPosPtr(parm.mPositionRef);\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t\t\tpc_recolor::tintEffect(mEfx, mColor);\n"
+               "#endif\n"
+               "\t\t}\n"
+               "\t}\n"),
+          ])
+
+          # pelletMgr.cpp
+          edit("src/plugPikiKando/pelletMgr.cpp", [
+              ('#include "MapMgr.h"\n#include "Pellet.h"\n',
+               '#include "MapMgr.h"\n#include "Pellet.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ("\tif (mConfig->mPelletColor() != PELCOLOR_NULL) {\n"
+               "\t\tf32 val = mConfig->mPelletColor();\n"
+               "\t\tmAnimatedMaterials.animate(&val);\n"
+               "\t} else if (isUfoParts()) {\n"
+               "\t\tmAnimatedMaterials.animate(nullptr);\n"
+               "\t}\n",
+
+               "\tif (mConfig->mPelletColor() != PELCOLOR_NULL) {\n"
+               "\t\tf32 val = mConfig->mPelletColor();\n"
+               "\t\tmAnimatedMaterials.animate(&val);\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t\tpc_recolor::applyMaterial(mAnimatedMaterials, mConfig->mPelletColor());\n"
+               "#endif\n"
+               "\t} else if (isUfoParts()) {\n"
+               "\t\tmAnimatedMaterials.animate(nullptr);\n"
+               "\t}\n"),
+          ])
+
+          # piki.cpp
+          edit("src/plugPikiKando/piki.cpp", [
+              ('#include "Piki.h"\n',
+               '#include "Piki.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ("void Piki::initColor(int color)\n"
+               "{\n"
+               "\tmColor = color;\n",
+
+               "void Piki::initColor(int color)\n"
+               "{\n"
+               "\tmColor = color;\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t{\n"
+               "\t\tstatic const Colour kOriginalPikiColours[3] = {\n"
+               "\t\t\tColour(0, 50, 255, 255),\n"
+               "\t\t\tColour(255, 30, 0, 255),\n"
+               "\t\t\tColour(255, 210, 0, 255),\n"
+               "\t\t};\n"
+               "\t\tpc_recolor::refreshTable(pikiColors, kOriginalPikiColours);\n"
+               "\t}\n"
+               "#endif\n"),
+          ])
+
+          # pikiheadItem.cpp
+          edit("src/plugPikiKando/pikiheadItem.cpp", [
+              ('#include "MapMgr.h"\n#include "NaviMgr.h"\n',
+               '#include "MapMgr.h"\n#include "NaviMgr.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ("void PikiHeadItem::startAI(int)\n"
+               "{\n"
+               "\tstartFix();\n",
+
+               "void PikiHeadItem::startAI(int)\n"
+               "{\n"
+               "\tstartFix();\n"
+               "#if defined(PIKI_PC_PORT)\n"
+               "\t{\n"
+               "\t\tstatic const Colour kOriginalPikiColours[3] = {\n"
+               "\t\t\tColour(0, 50, 255, 255),\n"
+               "\t\t\tColour(255, 30, 0, 255),\n"
+               "\t\t\tColour(255, 210, 0, 255),\n"
+               "\t\t};\n"
+               "\t\tpc_recolor::refreshTable(Piki::pikiColors, kOriginalPikiColours);\n"
+               "\t}\n"
+               "#endif\n"),
+          ])
+
+          # cinePlayer.cpp
+          edit("src/plugPikiColin/cinePlayer.cpp", [
+              ('#include "Creature.h"\n#include "DebugLog.h"\n',
+               '#include "Creature.h"\n#include "DebugLog.h"\n#if defined(PIKI_PC_PORT)\n#include "mods/pc_recolor.h"\n#endif\n'),
+
+              ('mActiveActor->mModel->mMaterialList[0].setColour(Colour(0, 50, 255, 255));',
+               '#if defined(PIKI_PC_PORT)\n\t\tmActiveActor->mModel->mMaterialList[0].setColour(pc_recolor::pikiColour(0, Colour(0, 50, 255, 255)));\n#else\n\t\tmActiveActor->mModel->mMaterialList[0].setColour(Colour(0, 50, 255, 255));\n#endif'),
+
+              ('mActiveActor->mModel->mMaterialList[0].setColour(Colour(255, 30, 0, 255));',
+               '#if defined(PIKI_PC_PORT)\n\t\tmActiveActor->mModel->mMaterialList[0].setColour(pc_recolor::pikiColour(1, Colour(255, 30, 0, 255)));\n#else\n\t\tmActiveActor->mModel->mMaterialList[0].setColour(Colour(255, 30, 0, 255));\n#endif'),
+
+              ('mActiveActor->mModel->mMaterialList[0].setColour(Colour(255, 210, 0, 255));',
+               '#if defined(PIKI_PC_PORT)\n\t\tmActiveActor->mModel->mMaterialList[0].setColour(pc_recolor::pikiColour(2, Colour(255, 210, 0, 255)));\n
